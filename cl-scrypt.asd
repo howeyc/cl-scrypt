@@ -9,5 +9,6 @@
   :serial t
   :depends-on (#:ironclad)
   :components ((:file "package")
+               (:file "ironclad-common")
                (:file "cl-scrypt")))
 

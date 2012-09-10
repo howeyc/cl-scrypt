@@ -4,4 +4,4 @@
   (:use #:cl)
   (:export
     #:derive-key
-    #:make-kdf))
+    #:make-scrypt-kdf))

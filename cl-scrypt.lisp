@@ -1,9 +1,13 @@
-;;;; cl-scrypt.lisp
+;;;; -*- mode: lisp; indent-tabs-mode: nil -*-
+(in-package :cl-scrypt)
 
-(in-package #:cl-scrypt)
+
+;;; scrypt from Colin Percival's
+;;; "Stronger Key Derivation via Sequential Memory-Hard Functions"
+;;; presented at BSDCan'09, May 2009.
+;;; http://www.tarsnap.com/scrypt.html
 
-
-(defclass scrypt-kdf ()
+(defclass scryptkdf ()
  ((N :accessor scrypt-kdf-N
      :initarg :N
      :initform 16384)
@@ -14,192 +18,74 @@
      :initarg :p
      :initform 1)))
 
-(defun make-kdf (&key (N 16384) (r 8) (p 1))
- (make-instance 'scrypt-kdf :N N :r r :p p))
+(defmacro salsa-vector-4mix (x i4 i8 i12 i0)
+  `(setf (aref ,x ,i4) (ldb (byte 32 0) (logxor (aref ,x ,i4) (rol32 (mod32+ (aref ,x ,i0) (aref ,x ,i12)) 7)))
+         (aref ,x ,i8) (ldb (byte 32 0) (logxor (aref ,x ,i8) (rol32 (mod32+ (aref ,x ,i4) (aref ,x ,i0)) 9)))
+         (aref ,x ,i12) (ldb (byte 32 0) (logxor (aref ,x ,i12) (rol32 (mod32+ (aref ,x ,i8) (aref ,x ,i4)) 13)))
+         (aref ,x ,i0) (ldb (byte 32 0) (logxor (aref ,x ,i0) (rol32 (mod32+ (aref ,x ,i12) (aref ,x ,i8)) 18)))))
 
-(defmacro start-slice (array-name start-index-expr)
- (let ((start-index (gensym))
-       (length-val (gensym)))
-  `(let* ((,start-index ,start-index-expr)
-          (,length-val (- (length ,array-name) ,start-index)))
-    (make-array ,length-val
-                :element-type '(unsigned-byte 8)
-                :displaced-to ,array-name
-                :displaced-index-offset ,start-index))))
+(defun scrypt-vector-salsa (b)
+ (let ((x (make-array 16 :element-type '(unsigned-byte 32)))
+       (w (make-array 16 :element-type '(unsigned-byte 32))))
+  (declare (type (simple-array (unsigned-byte 32) (16)) x w))
+  (fill-block-ub8-le x b 0)
+  (replace w x)
 
-(defun mod32+ (a b)
-  (declare (type (unsigned-byte 32) a b))
-  (ldb (byte 32 0) (+ a b)))
+  (loop repeat 4 do
+    (salsa-vector-4mix x 4 8 12 0)
+    (salsa-vector-4mix x 9 13 1 5)
+    (salsa-vector-4mix x 14 2 6 10)
+    (salsa-vector-4mix x 3 7 11 15)
+    (salsa-vector-4mix x 1 2 3 0)
+    (salsa-vector-4mix x 6 7 4 5)
+    (salsa-vector-4mix x 11 8 9 10)
+    (salsa-vector-4mix x 12 13 14 15))
 
-(defun rol32 (a s)
-  (declare (type (unsigned-byte 32) a) (type (integer 0 32) s))
-  #+sbcl
-  (sb-rotate-byte:rotate-byte s (byte 32 0) a)
-  #-(or sbcl cmu)
-  (logior (ldb (byte 32 0) (ash a s)) (ash a (- s 32))))
+  (dotimes (i 16)
+    (setf (nibbles:ub32ref/le b (* i 4)) (mod32+ (aref x i) (aref w i))))))
 
-(defmacro salsa-4mix (v4 v8 v12 v0)
-  `(setf ,v4 (ldb (byte 32 0) (logxor ,v4 (rol32 (mod32+ ,v0 ,v12) 7)))
-         ,v8 (ldb (byte 32 0) (logxor ,v8 (rol32 (mod32+ ,v4 ,v0) 9)))
-         ,v12 (ldb (byte 32 0) (logxor ,v12 (rol32 (mod32+ ,v8 ,v4) 13)))
-         ,v0 (ldb (byte 32 0) (logxor ,v0 (rol32 (mod32+ ,v12 ,v8) 18)))))
-
-(defun block-copy (dst dst-start src src-start n)
- (dotimes (i n)
-   (setf (aref dst (+ i dst-start)) (aref src (+ i src-start)))))
-
-(defun block-xor (dst dst-start src src-start n)
- (dotimes (i n)
-   (setf (aref dst (+ i dst-start)) (logxor (aref dst (+ i dst-start)) (aref src (+ i src-start))))))
-
-(defun salsa (b)
- (let ((w0 (ironclad:ub32ref/le b 0))
-       (w1 (ironclad:ub32ref/le b 4))
-       (w2 (ironclad:ub32ref/le b 8))
-       (w3 (ironclad:ub32ref/le b 12))
-       (w4 (ironclad:ub32ref/le b 16))
-       (w5 (ironclad:ub32ref/le b 20))
-       (w6 (ironclad:ub32ref/le b 24))
-       (w7 (ironclad:ub32ref/le b 28))
-       (w8 (ironclad:ub32ref/le b 32))
-       (w9 (ironclad:ub32ref/le b 36))
-       (w10 (ironclad:ub32ref/le b 40))
-       (w11 (ironclad:ub32ref/le b 44))
-       (w12 (ironclad:ub32ref/le b 48))
-       (w13 (ironclad:ub32ref/le b 52))
-       (w14 (ironclad:ub32ref/le b 56))
-       (w15 (ironclad:ub32ref/le b 60))
-       (x0 (ironclad:ub32ref/le b 0))
-       (x1 (ironclad:ub32ref/le b 4))
-       (x2 (ironclad:ub32ref/le b 8))
-       (x3 (ironclad:ub32ref/le b 12))
-       (x4 (ironclad:ub32ref/le b 16))
-       (x5 (ironclad:ub32ref/le b 20))
-       (x6 (ironclad:ub32ref/le b 24))
-       (x7 (ironclad:ub32ref/le b 28))
-       (x8 (ironclad:ub32ref/le b 32))
-       (x9 (ironclad:ub32ref/le b 36))
-       (x10 (ironclad:ub32ref/le b 40))
-       (x11 (ironclad:ub32ref/le b 44))
-       (x12 (ironclad:ub32ref/le b 48))
-       (x13 (ironclad:ub32ref/le b 52))
-       (x14 (ironclad:ub32ref/le b 56))
-       (x15 (ironclad:ub32ref/le b 60)))
-
-  (declare (type (unsigned-byte 32)
-            x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15
-            w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15)
-            (optimize (speed 3) (safety 0)))
-
-  (loop for i from 0 below 8 by 2
-        do 
-        (salsa-4mix x4 x8 x12 x0)
-        (salsa-4mix x9 x13 x1 x5)
-        (salsa-4mix x14 x2 x6 x10)
-        (salsa-4mix x3 x7 x11 x15)
-        (salsa-4mix x1 x2 x3 x0)
-        (salsa-4mix x6 x7 x4 x5)
-        (salsa-4mix x11 x8 x9 x10)
-        (salsa-4mix x12 x13 x14 x15))
-
-  (setf (ironclad:ub32ref/le b 0) (ldb (byte 32 0) (+ x0 w0))
-        (ironclad:ub32ref/le b 4) (ldb (byte 32 0) (+ x1 w1))
-        (ironclad:ub32ref/le b 8) (ldb (byte 32 0) (+ x2 w2))
-        (ironclad:ub32ref/le b 12) (ldb (byte 32 0) (+ x3 w3))
-        (ironclad:ub32ref/le b 16) (ldb (byte 32 0) (+ x4 w4))
-        (ironclad:ub32ref/le b 20) (ldb (byte 32 0) (+ x5 w5))
-        (ironclad:ub32ref/le b 24) (ldb (byte 32 0) (+ x6 w6))
-        (ironclad:ub32ref/le b 28) (ldb (byte 32 0) (+ x7 w7))
-        (ironclad:ub32ref/le b 32) (ldb (byte 32 0) (+ x8 w8))
-        (ironclad:ub32ref/le b 36) (ldb (byte 32 0) (+ x9 w9))
-        (ironclad:ub32ref/le b 40) (ldb (byte 32 0) (+ x10 w10))
-        (ironclad:ub32ref/le b 44) (ldb (byte 32 0) (+ x11 w11))
-        (ironclad:ub32ref/le b 48) (ldb (byte 32 0) (+ x12 w12))
-        (ironclad:ub32ref/le b 52) (ldb (byte 32 0) (+ x13 w13))
-        (ironclad:ub32ref/le b 56) (ldb (byte 32 0) (+ x14 w14))
-        (ironclad:ub32ref/le b 60) (ldb (byte 32 0) (+ x15 w15)))))
-
-(defun block-mix (b y r)
+(defun block-mix (b xy xy-start r)
  (let ((xs (make-array 64 :element-type '(unsigned-byte 8))))
-  (block-copy xs
-              0
-              b
-              (* 64 (1- (* 2 r)))
-              64)
-  (loop for i from 0 below (* 2 r)
-        do (block-xor xs
-                      0
-                      b 
-                      (* i 64)
-                      64)
-           (salsa xs)
-           (block-copy y
-                       (* i 64)
-                       xs
-                       0
-                       64))
-  (loop for i from 0 below r
-        do (block-copy b
-                       (* i 64)
-                       y
-                       (* 64 2 i)
-                       64))
-  (loop for i from 0 below r
-        do (block-copy b
-                       (* 64 (+ i r))
-                       y
-                       (* 64 (1+ (* i 2)))
-                       64))))
+  (replace xs b :start2 (* 64 (1- (* 2 r))) :end1 64)
+  (dotimes (i (* 2 r))
+    (xor-block 64 xs b (* i 64) xs 0)
+    (scrypt-vector-salsa xs)
+    (replace xy xs :start1 (+ xy-start (* i 64)) :end2 64))
+  (dotimes (i r)
+    (replace b xy :start1 (* i 64) :end1 (+ 64 (* i 64)) :start2 (+ xy-start (* 64 2 i))))
+  (dotimes (i r)
+    (replace b xy :start1 (* 64 (+ i r)) :end1 (+ (* 64 (+ i r)) 64) :start2 (+ xy-start (* 64 (1+ (* i 2))))))))
 
-(defun smix (b r N v xy)
+(defun smix (b b-start r N v xy)
  (let ((x xy)
-       (y (start-slice xy (* 128 r))))
-  (block-copy x 0 b 0 (* 128 r))
-  (loop for i from 0 below N
-        do (block-copy v
-                       (* i 128 r)
-                       x
-                       0
-                       (* 128 r))
-           (block-mix x
-                      y
-                      r))
-  (loop for i from 0 below N
-        do (let ((j (ldb (byte 32 0) (logand (ironclad:ub64ref/le x (* (1- (* 2 r)) 64)) (1- N)))))
-            (block-xor x
-                       0
-                       v
-                       (* j 128 r)
-                       (* 128 r))
-            (block-mix x
-                       y
-                       r)))
-  (block-copy b
-              0
-              x
-              0
-              (* 128 r))))
+       (xy-start (* 128 r)))
+  (replace x b :end1 (* 128 r) :start2 b-start)
+  (dotimes (i N)
+    (replace v x :start1 (* i 128 r) :end2 (* 128 r))
+    (block-mix x xy xy-start r))
+  (dotimes (i N)
+    (let ((j (ldb (byte 32 0) (logand (nibbles:ub64ref/le x (* (1- (* 2 r)) 64)) (1- N)))))
+      (xor-block (* 128 r) x v (* j 128 r) x 0)
+      (block-mix x xy xy-start r)))
+  (replace b x :start1 b-start :end1 (+ b-start (* 128 r)))))
 
 (defun derive-key (kdf passphrase salt key-length)
- (let ((xy (make-array (* 256 (scrypt-kdf-r kdf))
-                       :element-type '(unsigned-byte 8)
-                       :fill-pointer t))
-       (v (make-array (* 128 (scrypt-kdf-r kdf) (scrypt-kdf-N kdf))
-                      :element-type '(unsigned-byte 8)
-                      :fill-pointer t))
-       (b (ironclad:derive-key (ironclad:make-kdf 'ironclad:PBKDF2 :digest 'ironclad:sha256)
-                               passphrase
-                               salt
-                               1
-                               (* (scrypt-kdf-p kdf) 128 (scrypt-kdf-r kdf)))))
-  (loop for i from 0 below (scrypt-kdf-p kdf)
-        do (smix (start-slice b (* i 128 (scrypt-kdf-r kdf)))
-                 (scrypt-kdf-r kdf)
-                 (scrypt-kdf-N kdf)
-                 v
-                 xy))
-  (ironclad:derive-key (ironclad:make-kdf 'ironclad:PBKDF2 :digest 'ironclad:SHA256)
-                       passphrase
-                       b
-                       1
-                       key-length)))
+ (let ((xy (make-array (* 256 (scrypt-kdf-r kdf)) :element-type '(unsigned-byte 8)))
+       (v (make-array (* 128 (scrypt-kdf-r kdf) (scrypt-kdf-N kdf)) :element-type '(unsigned-byte 8)))
+       (b (ironclad:derive-key (ironclad:make-kdf 'ironclad:PBKDF2 :digest 'ironclad:SHA256) passphrase salt 1 (* (scrypt-kdf-p kdf) 128 (scrypt-kdf-r kdf)))))
+  (dotimes (i (scrypt-kdf-p kdf))
+    (smix b (* i 128 (scrypt-kdf-r kdf)) (scrypt-kdf-r kdf) (scrypt-kdf-N kdf) v xy))
+  (ironclad:derive-key (ironclad:make-kdf 'ironclad:PBKDF2 :digest 'ironclad:SHA256) passphrase b 1 key-length)))
+
+(defun make-scrypt-kdf (&optional (N 16384 N-supplied-p) (r 8 r-supplied-p) (p 1 p-supplied-p))
+ "N is a CPU/memory cost parameter, and must be a power of two greater than 1.
+ r and p must satisfy (< (* r p) (expt 2 30)). If the parameters do not satisfy
+ the limits, that results in an unsupported-scrypt-costs error condition.
+
+ The recommended paramters for interactive logins as of 2009 are:
+ N=16384, r=8, p=1. They should be increased as memory latency and CPU parallelism
+ increases."
+  (when (or (and N-supplied-p (or (<= N 1) (not (zerop (logand N (1- N))))))
+            (and (or r-supplied-p p-supplied-p) (>= (* r p) (expt 2 30))))
+    (error 'unsupported-scrypt-cost-factors :N N :r r :p p))
+  (make-instance 'scryptkdf :N N :r r :p p))
