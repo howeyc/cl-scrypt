@@ -1,4 +1,5 @@
 ;;;; package.lisp
 
 (defpackage #:cl-scrypt
-  (:use #:cl))
+  (:use #:cl)
+  (:export #:decrypt-file))
