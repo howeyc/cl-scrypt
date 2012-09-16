@@ -2,4 +2,5 @@
 
 (defpackage #:cl-scrypt
   (:use #:cl)
-  (:export #:decrypt-file))
+  (:export #:encrypt-file
+           #:decrypt-file))
